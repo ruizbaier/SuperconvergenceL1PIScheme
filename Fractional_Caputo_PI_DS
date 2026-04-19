@@ -1,79 +1,68 @@
 from fenics import *
 import numpy as np
-from math import gamma, log, sqrt
+from math import gamma
+#Here, I only tried to implement the solver function in Python as I did in my MATLAB code.
+def solve_problem(Nx, Ny, N, alpha, Ccoeff, lambda_, mu, T, Sfun):
 
-# ============================================================
-# PARAMETERS
-# ============================================================
-alpha  = [0.7, 0.4]
-Ccoeff = [1.15, 0.5]
-lambda_ = [0.57, 0.5]
-mu     = [0.001, 0.0001]
-
-alpha1 = alpha[0]
-T = 1.0
-
-# Exact spatial function
-S_expr = Expression("sin(x[0])*sin(x[1])*(x[0]-2)*(x[1]-2)", degree=5)
-
-# ============================================================
-# SOLVER FUNCTION
-# ============================================================
-def solve_problem(Nx, Ny, N):
-
+    # ============================================================
+    # MESH AND SPACE
+    # ============================================================
     mesh = RectangleMesh(Point(0,0), Point(2,2), Nx, Ny)
     V = FunctionSpace(mesh, "CG", 1)
 
     u = TrialFunction(V)
     v = TestFunction(V)
 
-    # Coordinates
     coords = mesh.coordinates()
 
-    # Matrices
-    M = assemble(u*v*dx)
-    K = assemble(dot(grad(u), grad(v))*dx)
-
-    # Boundary
+    # Boundary condition (Dirichlet homogeneous handled via exact solution later if needed)
     def boundary(x, on_boundary):
         return on_boundary
 
-    # Graded mesh
-    r = (2-alpha1)/alpha1
+    # ============================================================
+    # MATRICES (FEM)
+    # ============================================================
+    M = assemble(u*v*dx)
+    K = assemble(dot(grad(u), grad(v))*dx)
+
+    # ============================================================
+    # TIME GRID (GRADED)
+    # ============================================================
+    alpha1 = alpha[0]
+    r = (2 - alpha1)/alpha1
+
     tn = np.array([T*(i/N)**r for i in range(N+1)])
     tau = np.diff(tn)
     tau1 = tau[0]
 
-    # Initial condition
-    t = 0.0
-    u_ex = Expression("(pow(t,a1)+2*pow(t,3))*sin(x[0])*sin(x[1])*(x[0]-2)*(x[1]-2)",
-                      t=t, a1=alpha1, degree=5)
-    U_old = interpolate(u_ex, V)
-
-    # Storage
-    U_hist = [U_old.copy(deepcopy=True)]
-
-    # ---------------- L1 WEIGHTS ----------------
+    # ============================================================
+    # L1 WEIGHTS
+    # ============================================================
     L = len(alpha)
     eta = []
 
     for i in range(L):
         ai = alpha[i]
         Ci = Ccoeff[i]
-        W = np.zeros((N, N))
 
+        W = np.zeros((N, N))
         for n in range(N):
             for j in range(n+1):
-                W[n,j] = Ci*((tn[n+1]-tn[n+1-j])**(1-ai)
-                            -(tn[n+1]-tn[n-j])**(1-ai)) / (tau[n-j]*gamma(2-ai))
+                W[n,j] = Ci * (
+                    (tn[n+1]-tn[n+1-j])**(1-ai)
+                    - (tn[n+1]-tn[n-j])**(1-ai)
+                ) / (tau[n-j]*gamma(2-ai))
         eta.append(W)
 
-    # ---------------- PI COEFFICIENTS ----------------
+    # ============================================================
+    # PI SCHEME COEFFICIENTS
+    # ============================================================
     R = len(lambda_)
+
     b = [np.zeros(N) for _ in range(R)]
     d = [np.zeros((N,N)) for _ in range(R)]
 
-    def phi_fun(n,l,xi,gamma_g):
+    def phi_fun(n, l, xi, gamma_g):
         if l > n:
             return 0.0
         num = (n**gamma_g - (l-1)**gamma_g)**(xi+1) \
@@ -85,130 +74,117 @@ def solve_problem(Nx, Ny, N):
 
     for rr in range(R):
         xi = lambda_[rr]
+
         for n in range(1, N+1):
 
+            # b_n^xi
             b[rr][n-1] = (n**gamma_g - 1)**(xi+1) \
-                         - n**(xi*gamma_g)*(n**gamma_g - xi - 1)
+                       - n**(xi*gamma_g)*(n**gamma_g - xi - 1)
 
+            # d_{n,l}^xi
             for l in range(1, n+1):
-                d[rr][n-1, l-1] = phi_fun(n, l, xi, gamma_g) \
-                                - phi_fun(n, l+1, xi, gamma_g)
+                d[rr][n-1, l-1] = (
+                    phi_fun(n,l,xi,gamma_g)
+                    - phi_fun(n,l+1,xi,gamma_g)
+                )
+
+    # ============================================================
+    # INITIAL CONDITION
+    # ============================================================
+    S_expr = Expression(
+        "sin(x[0])*sin(x[1])*(x[0]-2)*(x[1]-2)",
+        degree=5
+    )
+
+    U = Function(V)
+    U_old = interpolate(S_expr, V)
+
+    history = [U_old.copy(deepcopy=True)]
 
     # ============================================================
     # TIME LOOP
     # ============================================================
-    U = Function(V)
-
     for n in range(N):
 
         t = tn[n+1]
-        u_ex.t = t
 
-        # ---------- LHS ----------
+        # ========================================================
+        # LHS MATRIX
+        # ========================================================
         A = K.copy()
 
+        # L1 implicit part
         for i in range(L):
             A.axpy(eta[i][n,0], M)
 
+        # PI implicit part
         for rr in range(R):
             xi = lambda_[rr]
             mr = mu[rr]
+
             coeff = (tau1**xi)/gamma(2+xi)
 
             A.axpy(-mr*coeff*d[rr][n,n], M)
 
-        # ---------- RHS ----------
-        f_val = project(u_ex, V)
+        # ========================================================
+        # RHS BASE
+        # ========================================================
+        S_vec = interpolate(S_expr, V).vector()
 
-        rhs = assemble(f_val*v*dx)
+        tf = 0.0
+        for i in range(L):
+            ai = alpha[i]
+            Ci = Ccoeff[i]
 
-        # ---------- PI explicit ----------
-        conv_vec = Function(V)
-        conv_vec.vector()[:] = 0
+            tf += Ci * (
+                gamma(alpha1+1)/gamma(alpha1+1-ai)*t**(alpha1-ai)
+                + 2*gamma(4)/gamma(4-ai)*t**(3-ai)
+            )
+
+        rhs = M * (S_vec * tf) + K * (S_vec * (t**alpha1 + 2*t**3))
+
+        # ========================================================
+        # PI EXPLICIT PART
+        # ========================================================
+        conv = np.zeros(len(rhs))
 
         for rr in range(R):
             xi = lambda_[rr]
             mr = mu[rr]
+
             coeff = (tau1**xi)/gamma(2+xi)
 
-            temp = b[rr][n] * U_hist[0].vector()
+            temp = b[rr][n] * history[0].vector().get_local()
 
             for l in range(n):
-                temp += d[rr][n,l] * U_hist[l+1].vector()
+                temp += d[rr][n,l] * history[l+1].vector().get_local()
 
-            conv_vec.vector()[:] += mr*coeff*temp
+            conv += mr * coeff * temp
 
-        rhs += assemble(conv_vec*v*dx)
+        rhs += M * conv
 
-        # ---------- L1 history ----------
-        hist_vec = Function(V)
-        hist_vec.vector()[:] = 0
+        # ========================================================
+        # L1 HISTORY
+        # ========================================================
+        hist = np.zeros(len(rhs))
 
         for j in range(n):
             c = 0
             for i in range(L):
                 c += eta[i][n,j+1] - eta[i][n,j]
 
-            hist_vec.vector()[:] += c * U_hist[n-j].vector()
+            hist += c * history[n-j].vector().get_local()
 
-        rhs -= assemble(hist_vec*v*dx)
+        rhs -= M * hist
 
-        # ---------- BC ----------
-        bc = DirichletBC(V, u_ex, boundary)
+        # ========================================================
+        # SOLVE
+        # ========================================================
+        U_vec = Function(V)
 
-        # ---------- Solve ----------
-        solve(A, U.vector(), rhs, "lu")
-        bc.apply(U.vector())
+        solve(A, U_vec.vector(), rhs)
 
-        U_hist.append(U.copy(deepcopy=True))
-        U_old.assign(U)
+        history.append(U_vec.copy(deepcopy=True))
+        U_old.assign(U_vec)
 
-    return U, coords, tn
-
-
-# ============================================================
-# H1 ERROR
-# ============================================================
-def compute_H1_error(U, t):
-
-    mesh = U.function_space().mesh()
-    V = U.function_space()
-
-    u_exact = Expression("(pow(t,a1)+2*pow(t,3))*sin(x[0])*sin(x[1])*(x[0]-2)*(x[1]-2)",
-                         t=t, a1=alpha1, degree=5)
-
-    error = assemble(dot(grad(u_exact) - grad(U),
-                         grad(u_exact) - grad(U))*dx)
-
-    return sqrt(error)
-
-
-# ============================================================
-# MAIN DRIVER (SPATIAL CONVERGENCE)
-# ============================================================
-Nx_list = [8, 16, 32, 64]
-Ntime = 200
-
-prevE = None
-prevh = None
-
-print("\nSPATIAL CONVERGENCE")
-
-for Nx in Nx_list:
-
-    Ny = Nx
-    h = 2.0/Nx
-
-    U, coords, tn = solve_problem(Nx, Ny, Ntime)
-
-    t = tn[-1]
-    E = compute_H1_error(U, t)
-
-    if prevE is None:
-        print(Nx, h, E)
-    else:
-        r = log(prevE/E)/log(prevh/h)
-        print(Nx, h, E, r)
-
-    prevE = E
-    prevh = h
+    return U_vec, coords, tn
