@@ -72,7 +72,7 @@ for nk in range(nkmax):
         if t + dt > Tfinal:
             dt = Tfinal - t 
         t += dt
-        print("    Time step: t = {:.4f}".format(t))
+        print("    Time: t = {:.4f}".format(t))
         C_alpha = pow(dt, -alpha) / math.gamma(2 - alpha)
 
         u_ex.t = t
