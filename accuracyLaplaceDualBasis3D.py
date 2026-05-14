@@ -10,7 +10,7 @@ def str2exp(s):
 u_str = 'cos(pi*x)*sin(pi*y)*cos(pi*z)'  # 3D test function
 K = as_tensor(((2,0,0),(0,1,0),(0,0,0.5)))
 
-nkmax = 4  # Reduced for 3D due to computational cost
+nkmax = 6  # Reduced for 3D due to computational cost
 hh = []; nn = []; eu = []; ru = []
 e0 = []; r0 = []; eIu1 = []; eIu0 = []
 rIu1 = []; rIu0 = []
@@ -247,13 +247,13 @@ for nk in range(nkmax):
     u_h = Function(Vh)
     
     print("  Solving fine mesh problem...")
-    solve(auv == Fv, u_h, bcU)
+    solve(auv == Fv, u_h, bcU, solver_parameters={'linear_solver': 'mumps'})
 
     # ********* Build the quasi-interpolant ********* #
     print("  Building quasi-interpolant...")
-    Iu = build_patch_averaged_interpolant_3D(u_h, mesh_coarse, W2h)
+    #Iu = build_patch_averaged_interpolant_3D(u_h, mesh_coarse, W2h)
 
-    #Iu = interpolate(u_h,W2h) #build_patch_averaged_interpolant_3D(u_h, mesh_coarse, W2h)
+    Iu = interpolate(u_h,W2h) #build_patch_averaged_interpolant_3D(u_h, mesh_coarse, W2h)
     
 
     # ********* Computing errors ****** #
